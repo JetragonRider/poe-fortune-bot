@@ -1,0 +1,38 @@
+name: English Setup OLEToken
+
+on:
+  workflow_dispatch:
+    inputs:
+      guild_id:
+        description: 'Server ID'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  english-setup:
+    runs-on: ubuntu-latest
+    env:
+      DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+      GUILD_ID_INPUT: ${{ inputs.guild_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download and run English setup
+        run: |
+          curl -sL "https://raw.githubusercontent.com/JetragonRider/oletoken-discord/main/english_setup.py" -o english_setup.py
+          GUILD_ID="${GUILD_ID_INPUT:-}"
+          if [ -z "$GUILD_ID" ]; then
+            python3 -c "
+          import os, json, urllib.request
+          token = os.environ['DISCORD_TOKEN']
+          req = urllib.request.Request('https://discord.com/api/v10/users/@me/guilds', headers={'Authorization': f'Bot {token}'})
+          guilds = json.loads(urllib.request.urlopen(req, timeout=15).read())
+          print(guilds[-1]['id'])
+          " > /tmp/guild_id.txt
+          export GUILD_ID=$(cat /tmp/guild_id.txt)
+          fi
+          export GUILD_ID
+          python3 english_setup.py
