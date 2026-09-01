@@ -1,0 +1,170 @@
+name: Complete OLEToken Setup
+
+on:
+  workflow_dispatch:
+    inputs:
+      guild_id:
+        description: 'Server ID (留空自动检测)'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  complete-setup:
+    runs-on: ubuntu-latest
+    env:
+      DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Complete OLEToken setup
+        env:
+          GUILD_ID_INPUT: ${{ inputs.guild_id }}
+        run: |
+          python3 << 'PYEOF'
+          import os, json, time, urllib.request, urllib.error
+          
+          token = os.environ['DISCORD_TOKEN']
+          guild_input = os.environ.get('GUILD_ID_INPUT', '')
+          BASE = 'https://discord.com/api/v10'
+          headers = {
+              'Authorization': f'Bot {token}',
+              'Content-Type': 'application/json',
+              'User-Agent': 'OLEToken-Bot (1.0)'
+          }
+          
+          def api(method, path, data=None):
+              url = f'{BASE}{path}'
+              body = json.dumps(data).encode() if data else None
+              req = urllib.request.Request(url, data=body, headers=headers, method=method)
+              try:
+                  resp = urllib.request.urlopen(req, timeout=30)
+                  if resp.status == 204:
+                      return {}
+                  return json.loads(resp.read())
+              except urllib.error.HTTPError as e:
+                  error_body = e.read().decode()
+                  return {'error': e.code, 'body': error_body[:300]}
+              except Exception as e:
+                  return {'error': str(e)}
+          
+          # Get guild
+          if guild_input:
+              guild_id = guild_input
+          else:
+              guilds = api('GET', '/users/@me/guilds')
+              guild_id = guilds[0]['id'] if guilds else ''
+          
+          print(f'Guild ID: {guild_id}')
+          
+          # 1. Try to rename server
+          print('\n=== 1. Rename Server ===')
+          rename = api('PATCH', f'/guilds/{guild_id}', data={'name': 'OLEToken 中转站'})
+          if 'error' not in rename:
+              print(f'  Server renamed to: OLEToken 中转站')
+          else:
+              print(f'  Cannot rename (need Manage Guild permission): {rename}')
+          
+          # 2. Create welcome channel
+          print('\n=== 2. Create Welcome Channel ===')
+          channels = api('GET', f'/guilds/{guild_id}/channels')
+          info_cat_id = None
+          welcome_exists = False
+          if isinstance(channels, list):
+              for ch in channels:
+                  if ch.get('type') == 4 and '信息' in ch.get('name', ''):
+                      info_cat_id = ch['id']
+                  if ch.get('name') == 'welcome':
+                      welcome_exists = True
+          
+          if not welcome_exists and info_cat_id:
+              wc = api('POST', f'/guilds/{guild_id}/channels', data={
+                  'name': 'welcome', 'type': 0, 'topic': '欢迎来到OLEToken社区',
+                  'parent_id': info_cat_id
+              })
+              if 'id' in wc:
+                  print(f'  Welcome channel created (ID: {wc["id"]})')
+                  # Post welcome message
+                  api('POST', f'/channels/{wc["id"]}/messages', data={'embeds': [{
+                      'title': '🚀 欢迎来到 OLEToken 中转站社区!',
+                      'description': 'OLEToken 是一站式 AI API 中转站!\n\n输入 `!help` 查看命令\n有问题在 #support 提问\n首充送10%!',
+                      'color': 0x0099FF,
+                      'footer': {'text': 'OLEToken - Your Gateway to AI Models'}
+                  }]})
+                  print('  Welcome message posted')
+              else:
+                  print(f'  Failed: {wc}')
+          else:
+              print('  Welcome channel already exists or no info category')
+          
+          # 3. Create roles
+          print('\n=== 3. Create Roles ===')
+          ROLES = [
+              {'name': '🔴 OLEToken Team', 'color': 0xFF0000, 'permissions': str(0x1FEDC9DF), 'hoist': True, 'mentionable': False},
+              {'name': '🟠 Moderator', 'color': 0xFF8C00, 'permissions': str(0x1FEDC9CF), 'hoist': True, 'mentionable': True},
+              {'name': '🟢 Developer', 'color': 0x00FF00, 'permissions': str(0x00000010), 'hoist': True, 'mentionable': True},
+              {'name': '🔵 VIP Member', 'color': 0x0099FF, 'permissions': '0', 'hoist': True, 'mentionable': True},
+              {'name': '⚪ Member', 'color': 0xAAAAAA, 'permissions': '0', 'hoist': False, 'mentionable': False},
+              {'name': '🤖 OLEToken Bot', 'color': 0x5865F2, 'permissions': str(0x1FEDC9DF), 'hoist': False, 'mentionable': False},
+          ]
+          
+          existing_roles = api('GET', f'/guilds/{guild_id}/roles')
+          role_map = {r['name']: r['id'] for r in existing_roles} if isinstance(existing_roles, list) else {}
+          
+          created = 0
+          for role in ROLES:
+              if role['name'] in role_map:
+                  print(f'  ~ {role["name"]} exists')
+                  continue
+              result = api('POST', f'/guilds/{guild_id}/roles', data=role)
+              if 'id' in result:
+                  print(f'  + {role["name"]} (ID: {result["id"]})')
+                  role_map[role['name']] = result['id']
+                  created += 1
+              else:
+                  print(f'  X {role["name"]}: HTTP {result.get("error","?")}')
+              time.sleep(0.5)
+          
+          if created == 0 and len([r for r in ROLES if r['name'] not in role_map]) > 0:
+              print('\n  >> 需要手动授权! <<')
+              print('  Discord -> 服务器设置 -> 身份组')
+              print('  找到 Bot 的身份组 -> 开启"管理身份组"权限')
+              print('  然后重新运行此 workflow')
+          
+          # 4. Fix staff channel permissions
+          mod_id = role_map.get('🟠 Moderator')
+          team_id = role_map.get('🔴 OLEToken Team')
+          if mod_id or team_id:
+              print('\n=== 4. Fix Staff Permissions ===')
+              channels = api('GET', f'/guilds/{guild_id}/channels')
+              if isinstance(channels, list):
+                  for ch in channels:
+                      parent = next((c for c in channels if c['id'] == ch.get('parent_id') and c.get('type') == 4), None)
+                      if parent and '管理' in parent.get('name', ''):
+                          overwrites = [{'id': guild_id, 'type': 0, 'deny': 0x400}]
+                          if mod_id:
+                              overwrites.append({'id': mod_id, 'type': 0, 'allow': 0x400})
+                          if team_id:
+                              overwrites.append({'id': team_id, 'type': 0, 'allow': 0x400})
+                          api('PATCH', f'/channels/{ch["id"]}', data={'permission_overwrites': overwrites})
+                          print(f'  Fixed: #{ch["name"]}')
+                          time.sleep(0.3)
+          
+          print('\n=== DONE ===')
+          print(f'Roles: {len(role_map)} total, {created} created this run')
+          PYEOF
+      
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oletoken-complete
+          path: server_config.json
+          retention-days: 30
+          if-no-files-found: warn
