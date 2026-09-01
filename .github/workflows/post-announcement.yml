@@ -1,0 +1,53 @@
+name: Post Announcement
+
+on:
+  workflow_dispatch:
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    env:
+      DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+    steps:
+      - name: Post to announcements
+        run: |
+          python3 << 'PYEOF'
+          import os, json, urllib.request
+          
+          token = os.environ['DISCORD_TOKEN']
+          BASE = 'https://discord.com/api/v10'
+          headers = {
+              'Authorization': f'Bot {token}',
+              'Content-Type': 'application/json',
+              'User-Agent': 'OLEToken-Bot (1.0)'
+          }
+          
+          guild_id = '1544298515268632637'
+          
+          # Find announcements channel
+          req = urllib.request.Request(f'{BASE}/guilds/{guild_id}/channels', headers=headers)
+          channels = json.loads(urllib.request.urlopen(req, timeout=15).read())
+          
+          ch_id = None
+          for ch in channels:
+              if ch.get('name') == 'announcements':
+                  ch_id = ch['id']
+                  break
+          
+          if not ch_id:
+              print('ERROR: announcements channel not found')
+              exit(1)
+          
+          # Post announcement
+          msg = {"content": "\ud83d\ude80 OLETOKEN Official Community\n\nOne OpenAI-compatible API for 150+ AI model endpoints.\n\nAccess Claude, GPT, Gemini, Qwen, GLM, Kimi, DeepSeek, and more \u2014 covering text, vision, image, audio, and video models from 24+ providers.\n\nGet started in 3 steps:\nSign up \u2192 Top-Up \u2192 Create API key\n\nWhy OLETOKEN?\n\n\ud83d\udd0c OpenAI-compatible, easy integration\n\ud83e\udde0 150+ models in one API\n\u26a1 Global routing, load balancing, and stable access\n\ud83d\udd12 Independent API keys, quotas, and real-time usage tracking\n\ud83d\udcb0 Prepaid, pay-as-you-go billing\n\nCommunity perks\n\n\ud83c\udf81 New-member trial credits\n\ud83d\udee0 Integration support\n\ud83d\udca1 Model selection recommendations\n\ud83d\udce2 Service updates and release notices\n\nPlease do not share API keys, account details, spam, or unrelated promotions."}
+          data = json.dumps(msg).encode()
+          req = urllib.request.Request(
+              f'{BASE}/channels/{ch_id}/messages',
+              data=data,
+              headers=headers,
+              method='POST'
+          )
+          resp = urllib.request.urlopen(req, timeout=15)
+          result = json.loads(resp.read())
+          print(f'Posted! Message ID: {result.get("id")}')
+          PYEOF
