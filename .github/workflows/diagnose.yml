@@ -1,0 +1,58 @@
+name: Diagnose Bot Permissions
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    env:
+      DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+    steps:
+      - name: Check permissions
+        run: |
+          python3 << 'PYEOF'
+          import os, json, urllib.request
+          
+          token = os.environ['DISCORD_TOKEN']
+          BASE = 'https://discord.com/api/v10'
+          headers = {'Authorization': f'Bot {token}', 'User-Agent': 'OLEToken-Bot'}
+          
+          def api(path):
+              req = urllib.request.Request(f'{BASE}{path}', headers=headers)
+              resp = urllib.request.urlopen(req, timeout=15)
+              return json.loads(resp.read())
+          
+          bot = api('/users/@me')
+          print(f'Bot: {bot["username"]} (ID: {bot["id"]})')
+          
+          guilds = api('/users/@me/guilds')
+          for g in guilds:
+              print(f'Server: {g["name"]} (ID: {g["id"]}, owner={g.get("owner")}, permissions={g.get("permissions")})')
+          
+          guild_id = guilds[0]['id']
+          
+          # Get bot's roles in the server
+          member = api(f'/guilds/{guild_id}/members/{bot["id"]}')
+          print(f'Bot roles: {member.get("roles", [])}')
+          
+          # Get all roles with details
+          roles = api(f'/guilds/{guild_id}/roles')
+          print(f'\nAll roles ({len(roles)}):')
+          for r in roles:
+              perms = int(r.get('permissions', '0'))
+              has_admin = bool(perms & 0x8)
+              has_manage_roles = bool(perms & 0x10000000)
+              has_manage_channels = bool(perms & 0x10)
+              has_manage_guild = bool(perms & 0x20)
+              print(f'  {r["name"]} (ID:{r["id"]}, pos:{r.get("position",0)})')
+              print(f'    perms={r.get("permissions")} admin={has_admin} manage_roles={has_manage_roles} manage_channels={has_manage_channels} manage_guild={has_manage_guild}')
+              if str(bot["id"]) in str(r.get('tags', {}).get('bot_id', '')):
+                  print(f'    *** THIS IS THE BOT ROLE ***')
+          
+          # Check bot's guild permissions from guilds endpoint
+          guild_perms = int(guilds[0].get('permissions', '0'))
+          print(f'\nBot guild-level permissions: {guild_perms}')
+          print(f'  admin={bool(guild_perms & 0x8)}')
+          print(f'  manage_roles={bool(guild_perms & 0x10000000)}')
+          PYEOF
