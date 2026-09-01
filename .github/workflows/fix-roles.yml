@@ -1,0 +1,209 @@
+name: Fix OLEToken Roles & Permissions
+
+on:
+  workflow_dispatch:
+    inputs:
+      guild_id:
+        description: 'Server ID (留空自动检测)'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  fix-roles:
+    runs-on: ubuntu-latest
+    env:
+      DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Fix roles and permissions
+        env:
+          GUILD_ID_INPUT: ${{ inputs.guild_id }}
+        run: |
+          python3 -c "
+          import os, json, time, urllib.request, urllib.error
+          
+          token = os.environ['DISCORD_TOKEN']
+          guild_input = os.environ.get('GUILD_ID_INPUT', '')
+          headers = {
+              'Authorization': f'Bot {token}',
+              'Content-Type': 'application/json',
+              'User-Agent': 'OLEToken-Bot (1.0)'
+          }
+          
+          BASE = 'https://discord.com/api/v10'
+          
+          def api(method, path, data=None):
+              url = f'{BASE}{path}'
+              body = json.dumps(data).encode() if data else None
+              req = urllib.request.Request(url, data=body, headers=headers, method=method)
+              try:
+                  resp = urllib.request.urlopen(req, timeout=30)
+                  if resp.status == 204:
+                      return {}
+                  return json.loads(resp.read())
+              except urllib.error.HTTPError as e:
+                  error_body = e.read().decode()
+                  print(f'  HTTP {e.code}: {error_body[:200]}')
+                  return {'error': e.code}
+              except Exception as e:
+                  return {'error': str(e)}
+          
+          # Step 1: Get bot info
+          bot_info = api('GET', '/users/@me')
+          bot_id = bot_info.get('id', '')
+          print(f'Bot ID: {bot_id}')
+          
+          # Step 2: Get or determine guild
+          if guild_input:
+              guild_id = guild_input
+          else:
+              guilds = api('GET', '/users/@me/guilds')
+              guild_id = guilds[0]['id'] if guilds else ''
+              print(f'Using guild: {guilds[0][\"name\"] if guilds else \"none\"} ({guild_id})')
+          
+          if not guild_id:
+              print('ERROR: No guild found')
+              exit(1)
+          
+          # Step 3: Get all roles
+          roles = api('GET', f'/guilds/{guild_id}/roles')
+          print(f'\nCurrent roles ({len(roles)}):')
+          for r in roles:
+              print(f'  {r[\"name\"]} (ID: {r[\"id\"]}, perms: {r.get(\"permissions\",\"0\")}, position: {r.get(\"position\",0)})')
+          
+          # Step 4: Find bot's role
+          bot_role = None
+          for r in roles:
+              if r.get('tags', {}).get('bot_id') == bot_id:
+                  bot_role = r
+                  break
+          
+          if not bot_role:
+              # Try by checking members
+              member = api('GET', f'/guilds/{guild_id}/members/{bot_id}')
+              if 'roles' in member:
+                  for rid in member['roles']:
+                      for r in roles:
+                          if r['id'] == rid:
+                              bot_role = r
+                              break
+                      if bot_role:
+                          break
+          
+          if bot_role:
+              print(f'\nBot role: {bot_role[\"name\"]} (ID: {bot_role[\"id\"]})')
+              print(f'  Current permissions: {bot_role.get(\"permissions\", \"0\")}')
+              
+              # Step 5: Try to update bot's role with Manage Roles permission
+              print('\nAttempting to grant Manage Roles permission...')
+              updated = api('PATCH', f'/guilds/{guild_id}/roles/{bot_role[\"id\"]}', data={
+                  'permissions': str(0x1FEDC9DF),  # Administrator
+                  'name': bot_role['name']
+              })
+              if 'error' not in updated:
+                  print('  SUCCESS! Bot now has Administrator permission')
+                  can_manage_roles = True
+              else:
+                  print('  FAILED - Bot cannot modify its own role')
+                  print('  >> USER ACTION REQUIRED <<')
+                  print('  Go to: Discord -> Server Settings -> Roles')
+                  print(f'  Find role: {bot_role[\"name\"]}')
+                  print('  Enable: Administrator (or at minimum: Manage Roles)')
+                  print('  Then re-run this workflow')
+                  can_manage_roles = False
+          else:
+              print('Could not find bot role')
+              can_manage_roles = False
+          
+          if not can_manage_roles:
+              print('\n=== CANNOT CREATE ROLES YET ===')
+              print('Please grant the bot Administrator permission in server settings, then re-run.')
+              exit(0)
+          
+          # Step 6: Create roles
+          print('\n=== Creating OLEToken roles ===')
+          ROLES_CONFIG = [
+              {'name': '🔴 OLETOKEN Team', 'color': 0xFF0000, 'permissions': str(0x1FEDC9DF), 'hoist': True, 'mentionable': False},
+              {'name': '🟠 Moderator', 'color': 0xFF8C00, 'permissions': str(0x1FEDC9CF), 'hoist': True, 'mentionable': True},
+              {'name': '🟢 Developer', 'color': 0x00FF00, 'permissions': str(0x00000010), 'hoist': True, 'mentionable': True},
+              {'name': '🔵 VIP Member', 'color': 0x0099FF, 'permissions': '0', 'hoist': True, 'mentionable': True},
+              {'name': '⚪ Member', 'color': 0xAAAAAA, 'permissions': '0', 'hoist': False, 'mentionable': False},
+              {'name': '🤖 OLEToken Bot', 'color': 0x5865F2, 'permissions': str(0x1FEDC9DF), 'hoist': False, 'mentionable': False},
+          ]
+          
+          role_ids = {}
+          for role in ROLES_CONFIG:
+              # Check if role already exists
+              existing = None
+              for r in roles:
+                  if r['name'] == role['name']:
+                      existing = r
+                      break
+              
+              if existing:
+                  print(f'  ~ {role[\"name\"]} already exists (ID: {existing[\"id\"]})')
+                  role_ids[role['name']] = existing['id']
+              else:
+                  result = api('POST', f'/guilds/{guild_id}/roles', data=role)
+                  if 'id' in result:
+                      role_ids[role['name']] = result['id']
+                      print(f'  + {role[\"name\"]} (ID: {result[\"id\"]})')
+                  else:
+                      print(f'  X {role[\"name\"]}: {result}')
+                  time.sleep(0.5)
+          
+          # Save config
+          with open('server_config.json', 'w') as f:
+              json.dump({'roles': role_ids, 'guild_id': guild_id}, f, indent=2, ensure_ascii=False)
+          
+          print(f'\n=== Roles created: {len(role_ids)} ===')
+          for name, rid in role_ids.items():
+              print(f'  {name}: {rid}')
+          
+          # Step 7: Fix staff-only channel permissions
+          mod_role_id = role_ids.get('🟠 Moderator', '')
+          team_role_id = role_ids.get('🔴 OLETOKEN Team', '')
+          
+          if mod_role_id or team_role_id:
+              print('\n=== Fixing staff-only channel permissions ===')
+              channels = api('GET', f'/guilds/{guild_id}/channels')
+              for ch in channels:
+                  # Find admin category channels
+                  parent_id = ch.get('parent_id', '')
+                  parent_name = ''
+                  for c in channels:
+                      if c['id'] == parent_id and c.get('type') == 4:
+                          parent_name = c.get('name', '')
+                          break
+                  
+                  if '管理' in parent_name or 'staff' in parent_name.lower():
+                      overwrites = [{'id': guild_id, 'type': 0, 'deny': 0x400}]  # Deny VIEW_CHANNEL for @everyone
+                      if mod_role_id:
+                          overwrites.append({'id': mod_role_id, 'type': 0, 'allow': 0x400})
+                      if team_role_id:
+                          overwrites.append({'id': team_role_id, 'type': 0, 'allow': 0x400})
+                      
+                      result = api('PATCH', f'/channels/{ch[\"id\"]}', data={'permission_overwrites': overwrites})
+                      if 'error' not in result:
+                          print(f'  Fixed: #{ch[\"name\"]}')
+                      time.sleep(0.5)
+          
+          print('\n=== DONE ===')
+          "
+      
+      - name: Upload config
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oletoken-roles-config
+          path: server_config.json
+          retention-days: 30
+          if-no-files-found: warn
