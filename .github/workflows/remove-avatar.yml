@@ -1,0 +1,46 @@
+name: Remove Bot Avatar
+
+on:
+  workflow_dispatch:
+
+jobs:
+  remove-avatar:
+    runs-on: ubuntu-latest
+    env:
+      DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+    steps:
+      - name: Remove bot avatar
+        run: |
+          python3 << 'PYEOF'
+          import os, json, urllib.request, urllib.error
+          
+          token = os.environ['DISCORD_TOKEN']
+          BASE = 'https://discord.com/api/v10'
+          headers = {
+              'Authorization': f'Bot {token}',
+              'Content-Type': 'application/json',
+              'User-Agent': 'OLEToken-Bot (1.0)'
+          }
+          
+          # Get current bot info
+          req = urllib.request.Request(f'{BASE}/users/@me', headers=headers)
+          bot = json.loads(urllib.request.urlopen(req, timeout=15).read())
+          print(f'Bot: {bot.get("username")} (avatar: {bot.get("avatar")})')
+          
+          # Remove avatar by setting it to null
+          # Discord API: PATCH /users/@me with {"avatar": null}
+          data = json.dumps({"avatar": None}).encode()
+          req = urllib.request.Request(
+              f'{BASE}/users/@me',
+              data=data,
+              headers=headers,
+              method='PATCH'
+          )
+          try:
+              resp = urllib.request.urlopen(req, timeout=15)
+              result = json.loads(resp.read())
+              print(f'Avatar removed! New avatar: {result.get("avatar")}')
+          except urllib.error.HTTPError as e:
+              error_body = e.read().decode()
+              print(f'Failed (HTTP {e.code}): {error_body[:300]}')
+          PYEOF
