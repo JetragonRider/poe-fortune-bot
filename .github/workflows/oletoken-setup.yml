@@ -1,0 +1,108 @@
+name: Discover Bot Guilds & Setup OLEToken
+
+on:
+  workflow_dispatch:
+    inputs:
+      guild_id:
+        description: 'Server ID (留空则列出所有服务器)'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  discover-and-setup:
+    runs-on: ubuntu-latest
+    env:
+      DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: pip install websocket-client
+      
+      - name: Discover bot guilds
+        env:
+          GUILD_ID_INPUT: ${{ inputs.guild_id }}
+        run: |
+          python3 -c "
+          import os, json, urllib.request
+          
+          token = os.environ['DISCORD_TOKEN']
+          headers = {
+              'Authorization': f'Bot {token}',
+              'User-Agent': 'OLEToken-Bot (1.0)'
+          }
+          
+          # Get bot info
+          req = urllib.request.Request('https://discord.com/api/v10/users/@me', headers=headers)
+          resp = urllib.request.urlopen(req, timeout=15)
+          bot_info = json.loads(resp.read())
+          print(f'Bot: {bot_info.get(\"username\", \"unknown\")} (ID: {bot_info.get(\"id\")})')
+          
+          # Get guilds
+          req2 = urllib.request.Request('https://discord.com/api/v10/users/@me/guilds', headers=headers)
+          resp2 = urllib.request.urlopen(req2, timeout=15)
+          guilds = json.loads(resp2.read())
+          
+          print(f'\nFound {len(guilds)} servers:')
+          for g in guilds:
+              print(f'  - {g[\"name\"]} (ID: {g[\"id\"]}, owner: {g.get(\"owner\", False)})')
+          
+          # Save guild list
+          with open('guilds.json', 'w') as f:
+              json.dump(guilds, f, indent=2)
+          
+          # If guild_id provided, save it
+          guild_input = os.environ.get('GUILD_ID_INPUT', '')
+          if guild_input:
+              with open('target_guild.txt', 'w') as f:
+                  f.write(guild_input)
+              print(f'\nTarget guild ID set: {guild_input}')
+          else:
+              # Use the first guild (or the one where bot is owner)
+              target = None
+              for g in guilds:
+                  if g.get('owner', False):
+                      target = g['id']
+                      break
+              if not target and guilds:
+                  target = guilds[0]['id']
+              if target:
+                  with open('target_guild.txt', 'w') as f:
+                      f.write(target)
+                  print(f'\nAuto-selected guild: {target}')
+          "
+      
+      - name: Download OLEToken setup script
+        run: |
+          curl -sL "https://raw.githubusercontent.com/JetragonRider/oletoken-discord/main/setup_server.py" -o oletoken_setup.py
+          echo "Downloaded setup_server.py"
+          head -5 oletoken_setup.py
+      
+      - name: Run OLEToken setup
+        run: |
+          GUILD_ID=$(cat target_guild.txt)
+          echo "Setting up OLEToken in guild: $GUILD_ID"
+          
+          if [ -z "$GUILD_ID" ]; then
+            echo "::error::No guild ID found. Bot is not in any server."
+            exit 1
+          fi
+          
+          python3 oletoken_setup.py
+      
+      - name: Upload config
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oletoken-setup-result
+          path: |
+            guilds.json
+            server_config.json
+          retention-days: 30
